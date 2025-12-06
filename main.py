@@ -1,82 +1,119 @@
+import threading
+import time
+import keyboard
 from modules.cerebro import CerebroArgos
 from modules.movimento import HexapodDriver
 from modules.visao import OlhosArgos
 from modules.voz import VozArgos
-import time
-import keyboard
 
+# --- VARIÁVEIS GLOBAIS ---
+# Adicionamos "quem" para saber a identidade da pessoa
+dados_visao = {"detectado": False, "x": 0, "y": 0, "quem": "DESCONHECIDO"}
+estado_sistema = {"ativo": True, "rastreio": True, "ouvindo": False}
+
+# --- THREAD 1: O SUBCONSCIENTE (Visão e Motor) ---
+def subconsciente_motor(argos_eyes, argos_legs):
+    print("   [THREAD] Visão Biométrica iniciada.")
+    
+    while estado_sistema["ativo"]:
+        if estado_sistema["rastreio"]:
+            # 1. VISÃO: Obtém dados (Agora inclui a IDENTIDADE)
+            detectado, erro_x, erro_y, identidade = argos_eyes.ver()
+            
+            # Atualiza variáveis globais para a Thread Principal ler
+            dados_visao["detectado"] = detectado
+            dados_visao["x"] = erro_x
+            dados_visao["y"] = erro_y
+            dados_visao["quem"] = identidade 
+
+            # 2. MOVIMENTO: Só move se não estiver ouvindo (para reduzir ruído)
+            if detectado and not estado_sistema["ouvindo"]:
+                argos_legs.atualizar_rastreio(erro_x, erro_y)
+            
+        time.sleep(0.01)
+
+# --- THREAD 2: O CONSCIENTE (Cérebro e Voz) ---
 def main():
     print("===================================")
-    print("      INICIALIZANDO ARGOS v5       ")
-    print("      (Cognitivo + Sentinela)      ")
+    print("      ARGOS v7 - SENTINELA         ")
     print("===================================")
 
-    # 1. Inicializa os subsistemas
     argos_brain = CerebroArgos()
-    argos_legs = HexapodDriver(simulacao=True) # Mude para False no robô real
+    argos_legs = HexapodDriver(simulacao=True) 
     argos_eyes = OlhosArgos()
     argos_voice = VozArgos()
 
-    # Estado inicial
-    modo_rastreio = True
-    argos_voice.falar("Sistemas online. Modo sentinela ativo.")
-    
-    print("\n✅ Loop Principal Iniciado. Pressione ESC para sair.")
+    # Inicia a visão em paralelo
+    thread_visao = threading.Thread(target=subconsciente_motor, args=(argos_eyes, argos_legs))
+    thread_visao.daemon = True
+    thread_visao.start()
 
-    while True:
-        # --- BLOCO 1: VISÃO & RASTREIO ---
-        if modo_rastreio:
-            detectado, erro_x, erro_y = argos_eyes.ver()
-            if detectado:
-                argos_legs.atualizar_rastreio(erro_x, erro_y)
+    argos_voice.falar("Sistemas de segurança ativos.")
+    print("\n✅ Modo Sentinela. Pressione ESC para sair.")
 
-        # --- BLOCO 2: AUDIÇÃO (O GATILHO) ---
-        # ### NOVO: Verifica se chamou o nome "Argos" sem travar o vídeo
-        # Essa função deve ser muito rápida (retorna False se ninguém falar)
-        if argos_voice.detectar_wake_word(): 
-            print("\n[!] Gatilho detectado! Ouvindo comando...")
+    while estado_sistema["ativo"]:
+        
+        # 1. GATILHO (Wake Word)
+        if argos_voice.detectar_wake_word():
+            print("\n[!] Solicitado! Verificando ambiente...")
             
-            # 1. Feedback visual/sonoro
-            argos_voice.falar("Sim?") 
+            estado_sistema["ouvindo"] = True 
+            time.sleep(0.5) 
             
-            # 2. Ouve o comando completo (Aqui ele pode parar o vídeo rapidinho)
-            comando_texto = argos_voice.ouvir_comando_completo()
+            argos_voice.falar("Sim?")
+            comando = argos_voice.ouvir_comando_completo()
             
-            if comando_texto:
-                print(f"Você disse: {comando_texto}")
+            estado_sistema["ouvindo"] = False 
+            
+            if comando:
+                print(f"Comando: {comando}")
                 
-                # 3. Manda para o Cérebro Híbrido (Ollama/GPT)
-                resultado = argos_brain.processar_comando(comando_texto)
+                # --- AQUI ENTRA O BLOCO DE SEGURANÇA QUE VOCÊ PERGUNTOU ---
                 
-                # 4. Executa a decisão do Cérebro
-                tipo_acao = resultado['tipo'] # 'fala', 'movimento', 'ferramenta'
-                conteudo = resultado['resposta']
-                
-                # Se for fala, ele responde
-                if conteudo:
-                    argos_voice.falar(conteudo)
+                quem_esta_na_frente = dados_visao["quem"]
+                print(f"[SEGURANÇA] Identificado visualmente: {quem_esta_na_frente}")
 
-                # Se for movimento físico (Ex: "Dançar", "Sentar")
-                if tipo_acao == 'movimento':
-                    acao_fisica = resultado.get('acao')
-                    if acao_fisica == 'parar':
-                        modo_rastreio = False # Para de seguir o rosto
-                    elif acao_fisica == 'rastrear':
-                        modo_rastreio = True
+                resultado = None
+
+                # CENÁRIO 1: É o Dono (Acesso Total)
+                if quem_esta_na_frente == "DONO":
+                    resultado = argos_brain.processar_comando(comando)
+                
+                # CENÁRIO 2: Desconhecido (Acesso Restrito)
+                elif quem_esta_na_frente == "DESCONHECIDO":
+                    # Se perguntar dados sensíveis, nega.
+                    if "quem sou eu" in comando.lower() or "senha" in comando.lower() or "agenda" in comando.lower():
+                        resultado = {"tipo": "fala", "resposta": "Acesso negado. Identidade não confirmada."}
                     else:
-                        # Executa movimentos complexos (danca, etc)
-                        argos_legs.executar_script(acao_fisica)
+                        # Se for conversa fiada ou horas, ele responde normal
+                        resultado = argos_brain.processar_comando(comando) 
 
-        # --- SAÍDA ---
+                # CENÁRIO 3: Ninguém na câmera (Fantasma?)
+                else:
+                     # Se ele ouviu voz mas não vê ninguém, pode responder, mas com cautela
+                    resultado = argos_brain.processar_comando(comando)
+                    # Opcional: resultado = {"tipo": "fala", "resposta": "Não vejo ninguém aqui."}
+
+                # --- FIM DO BLOCO DE SEGURANÇA ---
+
+                # Executa a ação decidida acima
+                if resultado:
+                    if resultado['tipo'] == 'movimento':
+                        argos_voice.falar(resultado['resposta'])
+                        acao = resultado['acao']
+                        if acao == 'parar': estado_sistema["rastreio"] = False
+                        elif acao == 'dancar': pass 
+                        
+                    elif resultado['tipo'] == 'fala':
+                        argos_voice.falar(resultado['resposta'])
+
         if keyboard.is_pressed('esc'):
-            print("\nDesligando...")
+            estado_sistema["ativo"] = False
             break
             
-        # Pequena pausa para respirar a CPU
-        # time.sleep(0.01)
+        time.sleep(0.05)
+
+    thread_visao.join()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nFinalizando via Terminal.")
+    main()

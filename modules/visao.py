@@ -1,86 +1,74 @@
 import cv2
-import mediapipe as mp
-import time
+import os
 
 class OlhosArgos:
     def __init__(self):
-        print("👁️ Inicializando Rastreamento Facial...")
+        print("[VISAO] Inicializando sistema LBPH (Leve)...")
+        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) 
         
-        self.mp_face_detection = mp.solutions.face_detection
-        self.mp_draw = mp.solutions.drawing_utils
+        # Carrega o detector facial (Cascade)
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
-        # model_selection=0 é para rostos pertos (até 2 metros)
-        # model_selection=1 é para rostos longes (até 5 metros)
-        self.face_detection = self.mp_face_detection.FaceDetection(
-            model_selection=0, min_detection_confidence=0.6
-        )
+        # Carrega o reconhecedor treinado
+        self.recognizer = cv2.face.LBPHFaceRecognizer_create()
+        self.modelo_carregado = False
         
-        self.cap = cv2.VideoCapture(0)
-        self.largura_cam = 640
-        self.altura_cam = 480
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.largura_cam)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.altura_cam)
-
-        # O Centro exato da imagem
-        self.centro_x_tela = self.largura_cam // 2
-        self.centro_y_tela = self.altura_cam // 2
+        if os.path.exists("treinador_argos.yml"):
+            try:
+                self.recognizer.read("treinador_argos.yml")
+                self.modelo_carregado = True
+                print("[VISAO] Biometria carregada com sucesso.")
+            except:
+                print("[VISAO] Erro ao ler arquivo de treino.")
+        else:
+            print("[VISAO] ALERTA: Rode 'cadastrar_dono.py' primeiro!")
 
     def ver(self):
-        """
-        Retorna: (detectou_algo, erro_x, erro_y)
-        erro_x > 0: Rosto está à direita
-        erro_x < 0: Rosto está à esquerda
-        """
-        sucesso, img = self.cap.read()
-        if not sucesso: return False, 0, 0
+        ret, frame = self.cap.read()
+        if not ret: return False, 0, 0, "DESCONHECIDO"
 
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        resultados = self.face_detection.process(img_rgb)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, 1.2, 5)
         
         detectado = False
         erro_x = 0
         erro_y = 0
+        identidade = "DESCONHECIDO"
 
-        if resultados.detections:
+        for (x, y, w, h) in faces:
             detectado = True
-            # Pega o primeiro rosto (o mais confiável)
-            rosto = resultados.detections[0]
             
-            # Desenha a caixa ao redor do rosto
-            self.mp_draw.draw_detection(img, rosto)
-            
-            # --- CÁLCULO DO CENTRO DO ROSTO ---
-            bboxC = rosto.location_data.relative_bounding_box
-            
-            # Converte coordenadas relativas (0.0 a 1.0) para pixels
-            x = int(bboxC.xmin * self.largura_cam)
-            y = int(bboxC.ymin * self.altura_cam)
-            w = int(bboxC.width * self.largura_cam)
-            h = int(bboxC.height * self.altura_cam)
-            
-            # O nariz/centro do rosto
-            centro_rosto_x = x + (w // 2)
-            centro_rosto_y = y + (h // 2)
-            
-            # Desenha o alvo no nariz
-            cv2.circle(img, (centro_rosto_x, centro_rosto_y), 5, (0, 255, 0), -1)
-            # Desenha linha do centro da tela até o nariz (Visualizar o erro)
-            cv2.line(img, (self.centro_x_tela, self.centro_y_tela), 
-                     (centro_rosto_x, centro_rosto_y), (0, 255, 255), 2)
+            # 1. Tenta Reconhecer
+            if self.modelo_carregado:
+                # O predict retorna (id, confianca)
+                # Confiança: 0 = perfeito, 100+ = ruim
+                id_predito, confianca = self.recognizer.predict(gray[y:y+h, x:x+w])
+                
+                # Se confiança for menor que 50, é muito provável que seja o dono
+                if confianca < 55: 
+                    identidade = "DONO"
+                    cor = (0, 255, 0) # Verde
+                else:
+                    identidade = "DESCONHECIDO"
+                    cor = (0, 0, 255) # Vermelho
+            else:
+                cor = (255, 0, 0) # Azul (Sem memoria)
 
-            # --- CÁLCULO DO ERRO (Matemática para os servos) ---
-            # Se for negativo, está na esquerda. Se positivo, direita.
-            erro_x = centro_rosto_x - self.centro_x_tela
-            erro_y = centro_rosto_y - self.centro_y_tela
+            # 2. Desenha Feedback
+            cv2.rectangle(frame, (x, y), (x+w, y+h), cor, 2)
+            cv2.putText(frame, str(identidade), (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, cor, 2)
 
-        # Desenha uma mira no centro da tela para referência
-        cv2.circle(img, (self.centro_x_tela, self.centro_y_tela), 2, (0, 0, 255), -1)
-        
-        cv2.imshow("Visão do Argos (Rastreio)", img)
-        cv2.waitKey(1)
-        
-        return detectado, erro_x, erro_y
+            # 3. Calcula Centro para Servos
+            centro_rosto_x = x + w // 2
+            centro_rosto_y = y + h // 2
+            height, width, _ = frame.shape
+            erro_x = centro_rosto_x - (width // 2)
+            erro_y = centro_rosto_y - (height // 2)
 
-    def desligar(self):
-        self.cap.release()
-        cv2.destroyAllWindows()
+            # Pega só o primeiro rosto e sai do loop
+            break 
+
+        cv2.imshow("Visao Argos (LBPH)", frame)
+        if cv2.waitKey(1) == ord('q'): pass
+            
+        return detectado, erro_x, erro_y, identidade
